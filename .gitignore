@@ -1,0 +1,20 @@
+# Pliki wykonywalne (Twoje programy)
+server
+client
+sop-mages
+
+# Pliki obiektowe (jeśli zaczniesz używać make z osobnych .o)
+*.o
+
+# Pliki tymczasowe i edytora
+*.swp
+*~
+.vscode/
+.idea/
+
+# Dumpy z debugowania
+core
+*.log
+
+# Pliki wygenerowane przez systemy (macOS/Linux)
+.DS_Store
