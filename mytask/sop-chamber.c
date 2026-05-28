@@ -18,6 +18,23 @@ typedef struct{
     char data[MAX_MSG_LEN];
 }job_t;
 
+typedef struct {
+    char contents[MAX_CONTENTS_LEN];
+    char sender[MAX_NAME_LEN + 1];
+    int priority;
+} parcel_t;
+
+typedef struct {
+    char name[MAX_NAME_LEN + 1];
+    struct sockaddr_in addr;
+    parcel_t mailbox[MAX_TOTAL_PARCELS];
+    int mailbox_count;
+    pthread_mutex_t mailbox_mutex;
+} wizard_t;
+
+wizard_t wizards[MAX_WIZARDS];
+int wizard_count = 0;
+
 typedef struct{
     job_t job[MAX_DISPATCH_QUEUE];
     int head;   // indeks gdzie czytamy (wątki familiar)
@@ -49,7 +66,7 @@ void queue_init(queue_t* q)
         ERR("cond init");
 }
 
-
+// queue_push - wątek główny wrzuca job
 void queue_push(queue_t* q, job_t job)
 {
     pthread_mutex_lock(&q->mutex);
@@ -77,7 +94,7 @@ void queue_push(queue_t* q, job_t job)
     pthread_cond_signal(&q->not_empty);
 }
 
-
+// queue_pop - courier czeka (pthread_cond_wait) aż coś się pojawi
 job_t queue_pop(queue_t* q)
 {
     pthread_mutex_lock(&q->mutex);
@@ -158,6 +175,20 @@ void* courier_thread(void* arg)
                 printf("[Courier] Delivered to %s: %s (priority %s)\n", recipients[i], content, priority);
             }
 
+            for(int i = 0; i < count; i++){
+            // znajdź czarodzieja po imieniu i wrzuć paczkę do mailboxa
+            for(int j = 0; j < wizard_count; j++){
+                if(strcmp(wizards[j].name, recipients[i]) == 0){
+                    pthread_mutex_lock(&wizards[j].mailbox_mutex);
+                    parcel_t p;
+                    strncpy(p.contents, content, MAX_CONTENTS_LEN);
+                    p.priority = atoi(priority);
+                    wizards[j].mailbox[wizards[j].mailbox_count++] = p;
+                    pthread_mutex_unlock(&wizards[j].mailbox_mutex);
+                }
+            }
+            printf("[Courier] Delivered to %s: %s (priority %s)\n", recipients[i], content, priority);
+        }
 
         }
     }
@@ -178,14 +209,26 @@ int work_with_data(char* buf){
 // (żeby main wiedział czy zwiększać msg_count)
     char original[MAX_MSG_LEN];
     strncpy(original, buf, MAX_MSG_LEN);
+    // Kopia oryginalnego bufora - strtok_r modyfikuje buf (zastępuje ; na \0)
+    // Potrzebujemy oryginału żeby wrzucić do kolejki dla couriера
 
     char* save_ptr;
+    // save_ptr - strtok_r zapamiętuje tu gdzie skończyła
+    // dzięki temu jest bezpieczna w wątkach (w przeciwieństwie do strtok)
+
 
     // usuwamy ostanie 
+    // strcspn zwraca indeks pierwszego \n
+    // zamieniamy \n na \0 żeby strtok_r nie widział końca linii jako tokenu
     buf[strcspn(buf, "\n")] = '\0';
+
+
 
     //type wyciagmy 
     char* type = strtok_r(buf, ";", &save_ptr);
+    // strtok_r tnie string na tokeny po ";"
+    // pierwszy argument: buf przy pierwszym wywołaniu, NULL przy kolejnych
+    // save_ptr - zapamiętuje gdzie skończyliśmy (bezpieczne w wątkach)
 
     if(type == NULL){
         fprintf(stderr, "[ERROR] Malformed message.\n");
@@ -204,6 +247,12 @@ int work_with_data(char* buf){
             return 0;
         }
         printf("[REG] Welcome to the Chamber, <%s>! \n", name);
+
+        strncpy(wizards[wizard_count].name, name, MAX_NAME_LEN);
+        wizards[wizard_count].mailbox_count = 0;
+        pthread_mutex_init(&wizards[wizard_count].mailbox_mutex, NULL);
+        wizard_count++;
+
     }
     else if (strcmp(type, "SEND") == 0)
     {
@@ -230,11 +279,13 @@ int work_with_data(char* buf){
         int count = 0;
         char* token  = strtok_r(NULL, ";", &save_ptr);
         while(token != NULL && count < MAX_RECIPIENTS){
+            // zbieramy recipientów w pętli - nie wiemy ile ich będzie
             recipients[count] = token;
             count++;
             token = strtok_r(NULL, ";", &save_ptr);
         }
         if(count == 0){
+            // musi być przynajmniej 1 recipient
             fprintf(stderr, "[ERROR] No recipients .\n");
             return 0;
         }
@@ -249,6 +300,10 @@ int work_with_data(char* buf){
         job_t job;
         strncpy(job.data, original, MAX_MSG_LEN);
         queue_push(&queue, job);
+
+        // wrzucamy ORYGINALNY bufor do kolejki (nie buf - jest już pocięty przez strtok_r)
+        // courier sam go sparsuje przez strtok_r
+
     }
     else if (strcmp(type, "FETCH") == 0)
     {
@@ -282,11 +337,17 @@ int main(int argc, char** argv)
 
     // TODO: Stage 1 - socket UDP + petla odbierania
 
+    // UDP socket - SOCK_DGRAM bo datagramy bez połączenia
+    // bind_inet_socket robi socket() + bind() za nas
     int sockfd = bind_inet_socket(port, SOCK_DGRAM, 0);
     printf("Listening on port %d\n", port);
 
-    struct sockaddr_in sender;
-    socklen_t sender_len = sizeof(sender);
+    struct sockaddr_in sender;       // adres nadawcy - IP i port skąd przyszedł datagram
+    socklen_t sender_len = sizeof(sender);  // rozmiar struktury - wymagany przez recvfrom
+
+    // recvfrom wymaga tych dwóch zmiennych żeby wiedzieć gdzie zapisać adres nadawcy. 
+    // sender_len musi być zainicjalizowany przed wywołaniem 
+    // — recvfrom go aktualizuje po odebraniu datagramu.
 
     char buf[MAX_MSG_LEN];
 
@@ -302,7 +363,9 @@ int main(int argc, char** argv)
 
     while(msg_count < MAX_MESSAGES){
         memset(buf, 0, sizeof(buf));
-        
+        // recvfrom - odbiera jeden datagram UDP
+        // sizeof(buf)-1 - zostawiamy miejsce na \0 (recvfrom nie dodaje go sam)
+        // sender - zapisuje skąd przyszedł datagram (IP + port)
         ssize_t received = TEMP_FAILURE_RETRY(recvfrom(
             sockfd, &buf, sizeof(buf) -1 , 0,
             (struct sockaddr*)&sender, &sender_len
