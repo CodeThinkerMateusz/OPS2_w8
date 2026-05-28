@@ -414,3 +414,37 @@ int main(int argc, char** argv)
         
     return EXIT_SUCCESS;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/// NOTES 
+
+
+//UDP SERWER 
+// int sockfd = bind_inet_socket(port, SOCK_DGRAM, 0);
+
+// struct sockaddr_in sender;
+// socklen_t sender_len = sizeof(sender);
+
+// while (1)
+// {
+//     ssize_t received = TEMP_FAILURE_RETRY(recvfrom(
+//         sockfd, &msg, sizeof(msg), 0,
+//         (struct sockaddr*)&sender, &sender_len
+//     ));
+//
+//      // pytanie co robimy z wiadomoscia  tu 
+// }
